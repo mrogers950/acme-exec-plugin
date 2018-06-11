@@ -1,7 +1,6 @@
 package plugin
 
 import (
-	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"io/ioutil"
@@ -10,12 +9,9 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/pem"
-	"net/http"
 	"os"
 
-	"context"
-
-	"golang.org/x/crypto/acme"
+	acmeclient "github.com/mrogers950/kubernetes-acme-exec-plugin/plugin/client"
 )
 
 func RunAcmeExecPlugin(o *PluginOptions) int {
@@ -72,29 +68,40 @@ func RunAcmeExecPlugin(o *PluginOptions) int {
 			}
 		}
 	}
-	tlsConf := &tls.Config{
-		RootCAs: roots,
-	}
-	tr := &http.Transport{TLSClientConfig: tlsConf}
-	client := &http.Client{Transport: tr}
-	acmeClient := &acme.Client{
-		DirectoryURL: o.ServerURL + "/dir",
-		HTTPClient:   client,
-		Key:          clientKey,
+	//tlsConf := &tls.Config{
+	//	RootCAs: roots,
+	//}
+	//tr := &http.Transport{TLSClientConfig: tlsConf}
+	//client := &http.Client{Transport: tr}
+	//acmeClient := &acme.Client{
+	//	DirectoryURL: o.ServerURL + "/dir",
+	//	HTTPClient:   client,
+	//	Key:          clientKey,
+	//}
+	//
+	//ctx := context.Background()
+	//disc, err := acmeClient.Discover(ctx)
+	//if err != nil {
+	//	fmt.Printf("Error discovering acme directory: %v\n", err)
+	//}
+	//
+	//fmt.Printf("discovery info %v\n", disc)
+	//_, err = acmeClient.Register(ctx, nil, acme.AcceptTOS)
+	//if err != nil {
+	//	fmt.Printf("Error registering account: %v", err)
+	//	return 1
+	//}
+
+	cli, err := acmeclient.NewClient(o.ServerURL+"/dir", "foo@bar.com", clientKey, roots)
+	if err != nil {
+		fmt.Printf("Error getting new client %v\n", err)
 	}
 
-	ctx := context.Background()
-	disc, err := acmeClient.Discover(ctx)
+	err = acmeclient.NewRepl(cli)
 	if err != nil {
-		fmt.Printf("Error discovering acme directory: %v\n", err)
+		fmt.Printf("Error during reply %v\n", err)
 	}
 
-	fmt.Printf("discovery info %v\n", disc)
-	_, err = acmeClient.Register(ctx, nil, acme.AcceptTOS)
-	if err != nil {
-		fmt.Printf("Error registering account: %v", err)
-		return 1
-	}
 	return 0
 }
 
