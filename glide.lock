@@ -1,0 +1,14 @@
+hash: a8cb5200163316494a5557af231311161d3df1e50444a93411b1d61eac516b50
+updated: 2018-06-11T15:03:35.634560298-04:00
+imports:
+- name: golang.org/x/crypto
+  version: 81e90905daefcd6fd217b62423c0908922eadb30
+  subpackages:
+  - ed25519
+  - ed25519/internal/edwards25519
+- name: gopkg.in/square/go-jose.v2
+  version: 76dd09796242edb5b897103a75df2645c028c960
+  subpackages:
+  - cipher
+  - json
+testImports: []
