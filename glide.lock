@@ -1,9 +1,12 @@
 hash: a8cb5200163316494a5557af231311161d3df1e50444a93411b1d61eac516b50
-updated: 2018-06-11T15:03:35.634560298-04:00
+updated: 2018-06-20T10:27:37.019029102-04:00
 imports:
+- name: github.com/golang/glog
+  version: 44145f04b68cf362d9c4df2182967c2275eaefed
 - name: golang.org/x/crypto
   version: 81e90905daefcd6fd217b62423c0908922eadb30
   subpackages:
+  - acme
   - ed25519
   - ed25519/internal/edwards25519
 - name: gopkg.in/square/go-jose.v2
@@ -11,4 +14,9 @@ imports:
   subpackages:
   - cipher
   - json
+- name: k8s.io/apimachinery
+  version: 5a8013207d0d28c7fe98193e5b6cdbf92e98a000
+  subpackages:
+  - pkg/util/runtime
+  - pkg/util/wait
 testImports: []
