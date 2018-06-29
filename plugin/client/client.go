@@ -15,13 +15,33 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"runtime"
+	osruntime "runtime"
 	"time"
 
 	"golang.org/x/crypto/acme"
 	"gopkg.in/square/go-jose.v2"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/pkg/apis/clientauthentication"
+	"k8s.io/client-go/pkg/apis/clientauthentication/v1alpha1"
+	"k8s.io/client-go/pkg/apis/clientauthentication/v1beta1"
+
+	"encoding/pem"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
 )
+
+var scheme = runtime.NewScheme()
+var codecs = serializer.NewCodecFactory(scheme)
+
+func init() {
+	v1.AddToGroupVersion(scheme, schema.GroupVersion{Version: "v1"})
+	v1alpha1.AddToScheme(scheme)
+	v1beta1.AddToScheme(scheme)
+	clientauthentication.AddToScheme(scheme)
+}
 
 const (
 	version       = "0.1"
@@ -32,19 +52,21 @@ const (
 func userAgent() string {
 	return fmt.Sprintf(
 		"%s %s (%s; %s)",
-		userAgentBase, version, runtime.GOOS, runtime.GOARCH)
+		userAgentBase, version, osruntime.GOOS, osruntime.GOARCH)
 }
 
 type client struct {
-	server            *url.URL
-	directory         map[string]interface{}
-	email             string
-	acctID            string
-	http              *http.Client
-	privKey           jose.SigningKey
-	nonce             string
-	orderResponse     *OrderResponse
-	orderLocation     string
+	server        *url.URL
+	directory     map[string]interface{}
+	email         string
+	acctID        string
+	http          *http.Client
+	clientKey     jose.SigningKey
+	nonce         string
+	orderResponse *OrderResponse
+	orderLocation string
+	// The key generated for the certificate request in the finalize step.
+	certKey           *rsa.PrivateKey
 	challengeResponse *ChallengeResponse
 }
 
@@ -76,7 +98,7 @@ func NewClient(server, email string, key *rsa.PrivateKey, pebbleCAPool *x509.Cer
 				},
 			},
 		},
-		privKey: jose.SigningKey{
+		clientKey: jose.SigningKey{
 			Key:       privKey,
 			Algorithm: jose.RS256,
 		},
@@ -221,6 +243,9 @@ func (c *client) PollForCertificate(url string) ([]byte, error) {
 	if len(url) < 1 {
 		return nil, fmt.Errorf("no certificate url provided")
 	}
+	if c.certKey == nil {
+		return nil, fmt.Errorf("need to call finalize first")
+	}
 
 	var certData []byte
 	err := wait.Poll(time.Second, 10*time.Second, func() (done bool, err error) {
@@ -245,7 +270,14 @@ func (c *client) PollForCertificate(url string) ([]byte, error) {
 	}
 	fmt.Println("cert poll: returning Poll")
 
-	return certData, nil
+	var keyData []byte
+	b := bytes.NewBuffer(keyData)
+	pem.Encode(b, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(c.certKey)})
+
+	fmt.Printf("cert key data %s\n", b.String())
+	creds, err := encodeClientCreds(certData, keyData)
+
+	return creds, nil
 }
 
 func (c *client) PollForOrderReady() (string, error) {
@@ -295,7 +327,17 @@ func (c *client) Finalize() error {
 		DNSNames: []string{"localhost"},
 	}
 
-	csr, err := x509.CreateCertificateRequest(rand.Reader, certReq, c.privKey.Key)
+	var key *rsa.PrivateKey
+	if c.certKey == nil {
+		var err error
+		key, err = rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			return err
+		}
+		c.certKey = key
+	}
+
+	csr, err := x509.CreateCertificateRequest(rand.Reader, certReq, c.certKey)
 	if err != nil {
 		return err
 	}
@@ -331,6 +373,32 @@ func (c *client) Finalize() error {
 	}
 
 	return nil
+}
+
+func encodeClientCreds(pemCert, pemKey []byte) ([]byte, error) {
+	encodeCred := &clientauthentication.ExecCredential{
+		Spec: clientauthentication.ExecCredentialSpec{
+			Response: &clientauthentication.Response{
+				Header: nil,
+				Code:   0,
+			},
+		},
+		Status: &clientauthentication.ExecCredentialStatus{
+			ExpirationTimestamp: nil,
+			Token:               "",
+			ClientCertificateData: string(pemCert),
+			ClientKeyData:         string(pemKey),
+		},
+	}
+
+	// XXX things are being encoded without the key
+	data, err := runtime.Encode(codecs.LegacyCodec(v1alpha1.SchemeGroupVersion), encodeCred)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Printf("encoded client creds: %s\n", string(data))
+
+	return data, nil
 }
 
 // SendTryChallenge tells the server to try the auth challenge
@@ -386,7 +454,7 @@ func (c *client) SetupChallenge(challengeAddr string) (*http.Server, error) {
 }
 
 func (c *client) signEmbedded(data []byte, url string) (*jose.JSONWebSignature, error) {
-	signer, err := jose.NewSigner(c.privKey, &jose.SignerOptions{
+	signer, err := jose.NewSigner(c.clientKey, &jose.SignerOptions{
 		NonceSource: c,
 		EmbedJWK:    true,
 		ExtraHeaders: map[jose.HeaderKey]interface{}{
@@ -406,7 +474,7 @@ func (c *client) signEmbedded(data []byte, url string) (*jose.JSONWebSignature, 
 
 func (c *client) signKeyID(data []byte, url string) (*jose.JSONWebSignature, error) {
 	jwk := &jose.JSONWebKey{
-		Key:       c.privKey.Key,
+		Key:       c.clientKey.Key,
 		Algorithm: "RSA",
 		KeyID:     c.acctID,
 	}
@@ -544,7 +612,7 @@ func (c *client) postAPIWithNonceRetry(url string, body []byte, embedJWK bool) (
 }
 
 func (c *client) accountKeyThumbprint() string {
-	key := c.privKey.Key.(*rsa.PrivateKey)
+	key := c.clientKey.Key.(*rsa.PrivateKey)
 	print, _ := acme.JWKThumbprint(key.Public())
 	return print
 }
