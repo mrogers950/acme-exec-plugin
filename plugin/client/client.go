@@ -1,7 +1,6 @@
 package client
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
@@ -10,27 +9,24 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/url"
-	"os"
 	osruntime "runtime"
 	"time"
 
 	"golang.org/x/crypto/acme"
 	"gopkg.in/square/go-jose.v2"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/client-go/pkg/apis/clientauthentication"
-	"k8s.io/client-go/pkg/apis/clientauthentication/v1alpha1"
-	"k8s.io/client-go/pkg/apis/clientauthentication/v1beta1"
-
-	"encoding/pem"
-
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/pkg/apis/clientauthentication"
+	"k8s.io/client-go/pkg/apis/clientauthentication/v1alpha1"
+	"k8s.io/client-go/pkg/apis/clientauthentication/v1beta1"
 )
 
 var scheme = runtime.NewScheme()
@@ -70,8 +66,7 @@ type client struct {
 	challengeResponse *ChallengeResponse
 }
 
-// registration and some other routines copied from the pebble client.
-
+// registration and some other routines based on the pebble client.
 func NewClient(server, email string, key *rsa.PrivateKey, pebbleCAPool *x509.CertPool) (*client, error) {
 	url, err := url.Parse(server)
 	if err != nil {
@@ -136,12 +131,21 @@ type OrderResponse struct {
 	Certificate    string
 }
 
+var PrintDebug = false
+
+func debugLog(format string, a ...interface{}) (n int, err error) {
+	if PrintDebug {
+		fmt.Printf(format, a...)
+	}
+	return 0, nil
+}
+
 func (c *client) Order() error {
 	if orderURL, ok := c.directory["newOrder"]; !ok || orderURL.(string) == "" {
 		return fmt.Errorf("missing \"newOrder\" entry in server directory")
 	}
 	orderURL := c.directory["newOrder"].(string)
-	fmt.Printf("posting new order with %q\n", orderURL)
+	debugLog("posting new order with %q\n", orderURL)
 
 	// pebble requires a dns order type
 	reqBody := struct {
@@ -196,7 +200,7 @@ type ChallengeResponse struct {
 
 func (c *client) GetChallenges() error {
 	if c.orderResponse == nil {
-		return fmt.Errorf("order has not been requested")
+		return fmt.Errorf("an order must be submitted first")
 	}
 
 	body, _, err := c.getAPI(c.orderResponse.Authorizations[0])
@@ -214,8 +218,9 @@ func (c *client) GetChallenges() error {
 }
 
 func (c *client) PollForValidChallenge() error {
+	debugLog("polling for a server response with a validated challenge")
+
 	return wait.Poll(time.Second, 40*time.Second, func() (done bool, err error) {
-		fmt.Println("checking if server responds with validated challenge")
 		chal, err := c.getHttpChallenge()
 		if err != nil {
 			return false, err
@@ -234,65 +239,67 @@ func (c *client) PollForValidChallenge() error {
 			return false, err
 		}
 
-		fmt.Printf("challenge status: %s\n", challengeInfo.ChallengeStatus)
+		debugLog("challenge status: %s\n", challengeInfo.ChallengeStatus)
 		return challengeInfo.ChallengeStatus == "valid", nil
 	})
 }
 
-func (c *client) PollForCertificate(url string) ([]byte, error) {
+func (c *client) PollForCertificate(url string) ([]byte, []byte, []byte, error) {
 	if len(url) < 1 {
-		return nil, fmt.Errorf("no certificate url provided")
+		return nil, nil, nil, fmt.Errorf("no certificate url provided")
 	}
 	if c.certKey == nil {
-		return nil, fmt.Errorf("need to call finalize first")
+		return nil, nil, nil, fmt.Errorf("must call finalize first")
 	}
+	debugLog("polling for an issued certificate")
 
-	var certData []byte
+	var cert []byte
 	err := wait.Poll(time.Second, 10*time.Second, func() (done bool, err error) {
-		fmt.Println("cert poll: pollfunc checking for a cert")
 		body, resp, err := c.getAPI(url)
 		if err != nil {
 			if resp != nil && resp.StatusCode/100 != 2 {
-				fmt.Println("cert poll: pollfunc retrying")
+				debugLog("poll: retrying")
 				return false, nil
 			}
-			fmt.Println("cert poll: pollfunc error")
 			return false, err
 		}
-		certData = body
-		fmt.Println("cert poll: returning pollfunc ok")
+		cert = body
+		debugLog("poll: ok")
 		return true, nil
 	})
 
 	if err != nil {
-		fmt.Println("cert poll: returning err")
-		return nil, err
+		return nil, nil, nil, err
 	}
-	fmt.Println("cert poll: returning Poll")
 
-	var keyData []byte
-	b := bytes.NewBuffer(keyData)
-	pem.Encode(b, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(c.certKey)})
+	if len(cert) < 1 {
+		return nil, nil, nil, fmt.Errorf("no certificate data received")
+	}
 
-	fmt.Printf("cert key data %s\n", b.String())
-	creds, err := encodeClientCreds(certData, keyData)
+	var key []byte
+	kb := bytes.NewBuffer(key)
+	pem.Encode(kb, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(c.certKey)})
 
-	return creds, nil
+	creds, err := encodeClientCreds(cert, kb.Bytes())
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	return creds, cert, kb.Bytes(), nil
 }
 
 func (c *client) PollForOrderReady() (string, error) {
 	var certUrl string
 
 	err := wait.Poll(time.Second, 10*time.Second, func() (done bool, err error) {
-		fmt.Println("order poll: checking for order ok")
+		debugLog("polling for an accepted order")
 
 		body, resp, err := c.getAPI(c.orderLocation)
 		if err != nil {
 			if resp != nil && resp.StatusCode/100 != 2 {
-				fmt.Println("order poll: pollfunc retrying")
+				debugLog("poll: retrying")
 				return false, nil
 			}
-			fmt.Println("order poll: error")
 			return false, err
 		}
 		orderResponse := &OrderResponse{}
@@ -302,11 +309,12 @@ func (c *client) PollForOrderReady() (string, error) {
 			return false, err
 		}
 
-		fmt.Printf("order poll: response %v\n", orderResponse)
 		if orderResponse.Status != "valid" {
+			debugLog("poll: retrying")
 			return false, nil
 		}
 		certUrl = orderResponse.Certificate
+		debugLog("poll: ok, response %v\n", certUrl)
 
 		return true, nil
 	})
@@ -376,40 +384,30 @@ func (c *client) Finalize() error {
 }
 
 func encodeClientCreds(pemCert, pemKey []byte) ([]byte, error) {
-	encodeCred := &clientauthentication.ExecCredential{
-		Spec: clientauthentication.ExecCredentialSpec{
-			Response: &clientauthentication.Response{
-				Header: nil,
-				Code:   0,
-			},
-		},
+	creds := &clientauthentication.ExecCredential{
 		Status: &clientauthentication.ExecCredentialStatus{
-			ExpirationTimestamp: nil,
-			Token:               "",
 			ClientCertificateData: string(pemCert),
 			ClientKeyData:         string(pemKey),
 		},
 	}
 
-	// XXX things are being encoded without the key
-	data, err := runtime.Encode(codecs.LegacyCodec(v1alpha1.SchemeGroupVersion), encodeCred)
+	data, err := runtime.Encode(codecs.LegacyCodec(v1alpha1.SchemeGroupVersion), creds)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("encoded client creds: %s\n", string(data))
 
 	return data, nil
 }
 
 // SendTryChallenge tells the server to try the auth challenge
 func (c *client) SendTryChallenge() error {
-	chal, err := c.getHttpChallenge()
+	challenge, err := c.getHttpChallenge()
 	if err != nil {
 		return err
 	}
 
 	// send "{}": https://tools.ietf.org/html/draft-ietf-acme-acme-12#section-8.3
-	_, _, err = c.postAPIWithNonceRetry(chal.ChallengeUrl, []byte("{}"), false)
+	_, _, err = c.postAPIWithNonceRetry(challenge.ChallengeUrl, []byte("{}"), false)
 	if err != nil {
 		return err
 	}
@@ -419,24 +417,22 @@ func (c *client) SendTryChallenge() error {
 
 // SetupChallenge sets up an http-01 challenge at challengeAddr
 func (c *client) SetupChallenge(challengeAddr string) (*http.Server, error) {
-	chal, err := c.getHttpChallenge()
+	challenge, err := c.getHttpChallenge()
 	if err != nil {
 		return nil, err
 	}
 
 	srv := &http.Server{Addr: challengeAddr}
 
-	keyAuthUrl := "/.well-known/acme-challenge/" + chal.ChallengeToken
-	fmt.Printf("setting up challenge at %q\n", keyAuthUrl)
+	keyAuthUrl := "/.well-known/acme-challenge/" + challenge.ChallengeToken
+	keyAuthorizer := challenge.ChallengeToken + "." + c.accountKeyThumbprint()
+	debugLog("responding to challenges at %q with %q\n", keyAuthUrl, keyAuthorizer)
 
-	// set up http challenge
 	http.HandleFunc(keyAuthUrl, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.WriteHeader(http.StatusOK)
-
-		challengeString := chal.ChallengeToken + "." + c.accountKeyThumbprint()
-		fmt.Printf("responded to challenge with %q\n", challengeString)
-		fmt.Fprint(w, challengeString)
+		debugLog("responded to challenge\n")
+		fmt.Fprint(w, keyAuthorizer)
 	})
 
 	go func() {
@@ -493,20 +489,19 @@ func (c *client) signKeyID(data []byte, url string) (*jose.JSONWebSignature, err
 
 	signer, err := jose.NewSigner(signerKey, opts)
 	if err != nil {
-		fmt.Printf("Err making signer: %#v\n", err)
+		debugLog("Err making signer: %#v\n", err)
 		return nil, err
 	}
-	fmt.Printf("signKeyID data to sign: %v\n", string(data))
 	signed, err := signer.Sign(data)
 	if err != nil {
-		fmt.Printf("Err using signer: %#v\n", err)
+		debugLog("Err using signer: %#v\n", err)
 		return nil, err
 	}
 	return signed, nil
 }
 
 func (c *client) updateDirectory() error {
-	fmt.Printf("Requesting directory from %q\n", c.server.String())
+	debugLog("Requesting directory from %q\n", c.server.String())
 	respBody, _, err := c.getAPI(c.server.String())
 	if err != nil {
 		return err
@@ -524,10 +519,10 @@ func (c *client) updateDirectory() error {
 
 func (c *client) updateNonce() error {
 	if rawNonceURL, present := c.directory["newNonce"]; !present || rawNonceURL.(string) == "" {
-		return fmt.Errorf("Missing \"newNonce\" entry in server directory")
+		return fmt.Errorf("missing \"newNonce\" entry in server directory")
 	}
 	nonceURL := c.directory["newNonce"].(string)
-	fmt.Printf("Requesting nonce from %q\n", nonceURL)
+	debugLog("Requesting nonce from %q\n", nonceURL)
 
 	before := c.nonce
 	_, _, err := c.getAPI(nonceURL)
@@ -537,17 +532,17 @@ func (c *client) updateNonce() error {
 	after := c.nonce
 
 	if before == after {
-		return fmt.Errorf("Did not receive a fresh nonce from newNonce URL")
+		return fmt.Errorf("did not receive a fresh nonce from newNonce URL")
 	}
 	return nil
 }
 
 func (c *client) register() error {
 	if acctURL, ok := c.directory["newAccount"]; !ok || acctURL.(string) == "" {
-		return fmt.Errorf("Missing \"newAccount\" entry in server directory")
+		return fmt.Errorf("missing \"newAccount\" entry in server directory")
 	}
 	acctURL := c.directory["newAccount"].(string)
-	fmt.Printf("Registering new account with %q\n", acctURL)
+	debugLog("Registering new account with %q\n", acctURL)
 
 	reqBody := struct {
 		ToSAgreed bool `json:"termsOfServiceAgreed"`
@@ -571,7 +566,7 @@ func (c *client) register() error {
 
 	locHeader := resp.Header.Get("Location")
 	if locHeader == "" {
-		return fmt.Errorf("No 'location' header with account URL in response")
+		return fmt.Errorf("no 'location' header with account URL in response")
 	}
 
 	c.acctID = locHeader
@@ -589,22 +584,19 @@ func (c *client) postAPIWithNonceRetry(url string, body []byte, embedJWK bool) (
 		respBody, resp, err := c.postAPI(url, body, embedJWK)
 		if err != nil {
 			if resp.StatusCode != http.StatusBadRequest {
-				fmt.Printf("nonce retry: got a non 400 error %v\n", resp.StatusCode)
 				return nil, nil, err
 			}
 			realErr := err
 			badNonceDetails := &BadNonce{}
 			err = json.Unmarshal(respBody, badNonceDetails)
 			if err != nil {
-				fmt.Printf("nonce retry: error decoding bad nonce message %s\n", err)
 				return nil, nil, err
 			}
 			if badNonceDetails.Type == "urn:ietf:params:acme:error:badNonce" {
-				fmt.Printf("nonce retry: got badNonce type, updating nonce and retrying\n")
+				debugLog("nonce retry: got badNonce, updating nonce and retrying\n")
 				c.updateNonce()
 				continue
 			}
-			fmt.Printf("nonce retry: error but not for badNonce\n")
 			return nil, nil, realErr
 		}
 		return respBody, resp, nil
@@ -706,22 +698,4 @@ func (c *client) postAPI(url string, body []byte, embedJWK bool) ([]byte, *http.
 	req.Header.Set("User-Agent", userAgent())
 	req.Header.Set("Accept-Language", locale)
 	return c.doReq(req)
-}
-
-func (c *client) readJSON() ([]byte, error) {
-	var jsonBuf string
-
-	scanner := bufio.NewScanner(os.Stdin)
-	fmt.Printf("$> Enter JSON body, empty line to finish : \n")
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" || line == "exit" || line == "q" {
-			break
-		}
-		jsonBuf += line
-	}
-
-	var indented bytes.Buffer
-	err := json.Indent(&indented, []byte(jsonBuf), "", "  ")
-	return indented.Bytes(), err
 }

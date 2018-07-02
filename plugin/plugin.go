@@ -50,7 +50,6 @@ func RunAcmeExecPlugin(o *PluginOptions) int {
 					return 1
 				}
 				pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(clientKey)})
-				fmt.Printf("wrote client key to %s\n", o.ClientKeyPath)
 			}
 		} else {
 			// load client key
@@ -72,6 +71,12 @@ func RunAcmeExecPlugin(o *PluginOptions) int {
 	defer certOut.Close()
 	if err != nil {
 		fmt.Printf("Cannot open cert file for writing: %v\n", err)
+		return 1
+	}
+	keyOut, err := os.OpenFile(o.CertKeyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	defer keyOut.Close()
+	if err != nil {
+		fmt.Printf("Cannot open cert key file for writing: %v\n", err)
 		return 1
 	}
 
@@ -125,14 +130,18 @@ func RunAcmeExecPlugin(o *PluginOptions) int {
 	certUrl, err := cli.PollForOrderReady()
 	if err != nil {
 		fmt.Printf("Error polling for ready order: %v\n", err)
+		return 1
 	}
 
-	cert, err := cli.PollForCertificate(certUrl)
+	creds, certPem, keyPem, err := cli.PollForCertificate(certUrl)
 	if err != nil {
 		fmt.Printf("Error fetching certificate: %v\n", err)
+		return 1
 	}
-	fmt.Printf("Cert body: %q\n", string(cert))
-	certOut.WriteString(string(cert))
+
+	fmt.Printf("%s", string(creds))
+	certOut.Write(certPem)
+	keyOut.Write(keyPem)
 	return 0
 }
 
@@ -141,7 +150,9 @@ type PluginOptions struct {
 	ServerCA       string
 	ClientKeyPath  string
 	CertPath       string
+	CertKeyPath    string
 	WriteClientKey bool
+	Debug          bool
 	ChallengeAddr  string
 	DirPath        string
 	RegisterEmail  string
