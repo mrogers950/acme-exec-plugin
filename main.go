@@ -10,28 +10,30 @@ import (
 
 func main() {
 	o := &execplugin.PluginOptions{
-		ServerURL:      "https://127.0.0.1:14000",                                                                      // pebble testing
-		ServerCA:       "/home/mrogers/projects/pebble/src/github.com/letsencrypt/pebble/test/certs/pebble.minica.pem", // pebble testing
+		ServerURL:      "",
+		ServerCA:       "",
 		Debug:          false,
-		ClientKeyPath:  "clientkey.pem",
-		WriteClientKey: true,
-		CertPath:       "cert.pem",
-		CertKeyPath:    "key.pem",
-		ChallengeAddr:  "localhost:5002", // pebble testing
+		ClientKeyPath:  "acme-plugin-clientkey.pem",
+		WriteClientKey: false,
+		CertPath:       "acme-plugin-cert.pem",
+		CertKeyPath:    "acme-plugin-key.pem",
+		ChallengeAddr:  "",
 		DirPath:        "/dir",
 		RegisterEmail:  "foo@bar.com",
+		DebugFile:      "",
 	}
 
-	flag.StringVar(&o.ServerURL, "server-url", o.ServerURL, "ACME server url")
-	flag.StringVar(&o.ServerCA, "server-ca", o.ServerCA, "ACME server CA for HTTPS")
-	flag.StringVar(&o.ClientKeyPath, "client-key", o.ClientKeyPath, "path to load client key from")
-	flag.BoolVar(&o.WriteClientKey, "write-client-key", o.WriteClientKey, "write out client key to the client key path")
-	flag.StringVar(&o.CertPath, "cert", o.CertPath, "path to save cert to")
-	flag.StringVar(&o.CertKeyPath, "cert-key", o.CertKeyPath, "path to save cert key to")
-	flag.StringVar(&o.ChallengeAddr, "challenge-addr", o.ChallengeAddr, "address to listen to for client challenge")
-	flag.BoolVar(&execplugincli.PrintDebug, "debug", o.Debug, "print debug messages")
-	flag.StringVar(&o.DirPath, "directory-path", o.DirPath, "acme directory path")
-	flag.StringVar(&o.RegisterEmail, "email", o.RegisterEmail, "client registration email")
+	flag.StringVar(&o.ServerURL, "server-url", o.ServerURL, "An HTTPS ACME server URL. Required.")
+	flag.StringVar(&o.ServerCA, "server-ca", o.ServerCA, "ACME server CA for HTTPS. Uses the system CA store if unset.")
+	flag.StringVar(&o.ClientKeyPath, "client-key", o.ClientKeyPath, "The path to a PEM private key file for client registration. If the file does not exist, a generated key is saved when specifying --write-client-key")
+	flag.BoolVar(&o.WriteClientKey, "write-client-key", o.WriteClientKey, "Write the client registration key to the --client-key file")
+	flag.StringVar(&o.CertPath, "cert", o.CertPath, "The path to cache the fulfilled certificate. When the file does not exist, the issued certificate is saved. If the file exists, the plugin returns the cert as a cached credential. Must be specified with --cert-key")
+	flag.StringVar(&o.CertKeyPath, "cert-key", o.CertKeyPath, "The path to cache the fulfilled certificate key. When the file does not exist, the issued certificate key is saved. If the file exists, the plugin returns the key as a cached credential. Must be specified with --cert")
+	flag.StringVar(&o.ChallengeAddr, "challenge-addr", o.ChallengeAddr, "Address (with port) to listen for HTTP on for the client to satisfy ACME challenges.")
+	flag.BoolVar(&execplugincli.PrintDebug, "debug", o.Debug, "Print debug messages.")
+	flag.StringVar(&o.DebugFile, "debug-file", o.DebugFile, "Print debug messages to the specified file when using --debug.")
+	flag.StringVar(&o.DirPath, "directory-path", o.DirPath, "The path to the discovery directory on the ACME server.")
+	flag.StringVar(&o.RegisterEmail, "email", o.RegisterEmail, "The email address used for client registration.")
 	flag.Parse()
 	os.Exit(execplugin.RunAcmeExecPlugin(o))
 }

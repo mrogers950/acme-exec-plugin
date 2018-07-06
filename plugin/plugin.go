@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"os"
 
+	"crypto/tls"
+
 	acmeclient "github.com/mrogers950/acme-exec-plugin/plugin/client"
 )
 
@@ -17,6 +19,48 @@ func RunAcmeExecPlugin(o *PluginOptions) int {
 	if err := o.Verify(); err != nil {
 		fmt.Printf("Error verifying options: %v\n", err)
 		return 1
+	}
+
+	// If the certificate and key files exist, use them as cache so the plugin does not request a new cert each time.
+	certOut, certOpenErr := os.OpenFile(o.CertPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+	defer certOut.Close()
+	if certOpenErr != nil && !os.IsExist(certOpenErr) {
+		fmt.Printf("Cannot open cert file for writing: %v\n", certOpenErr)
+		return 1
+	}
+	keyOut, keyOpenErr := os.OpenFile(o.CertKeyPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+	defer keyOut.Close()
+	if keyOpenErr != nil && !os.IsExist(keyOpenErr) {
+		fmt.Printf("Cannot open cert key file for writing: %v\n", keyOpenErr)
+		return 1
+	}
+
+	// The files exist, use them
+	if os.IsExist(certOpenErr) && os.IsExist(keyOpenErr) {
+		cert, err := ioutil.ReadFile(o.CertPath)
+		if err != nil {
+			fmt.Printf("error reading cert: %v\n", err)
+			return 1
+		}
+		key, err := ioutil.ReadFile(o.CertKeyPath)
+		if err != nil {
+			fmt.Printf("error reading key: %v\n", err)
+		}
+
+		if len(cert) > 0 && len(key) > 0 {
+			_, err := tls.X509KeyPair(cert, key)
+			if err != nil {
+				fmt.Printf("failed parsing client key/certificate: %v\n", err)
+				return 1
+			}
+			creds := acmeclient.MakeCreds(cert, key)
+			if creds == nil {
+				fmt.Printf("failed to format output credentials\n")
+				return 1
+			}
+			fmt.Printf("%s", string(creds))
+			return 0
+		}
 	}
 
 	var roots *x509.CertPool
@@ -34,14 +78,13 @@ func RunAcmeExecPlugin(o *PluginOptions) int {
 	}
 
 	var clientKey *rsa.PrivateKey
+	clientKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		fmt.Printf("Cannot generate client key: %v\n", err)
+		return 1
+	}
 	if len(o.ClientKeyPath) > 0 {
 		if _, err := os.Stat(o.ClientKeyPath); os.IsNotExist(err) {
-			// generate a new client key
-			clientKey, err = rsa.GenerateKey(rand.Reader, 2048)
-			if err != nil {
-				fmt.Printf("Cannot generate client key: %v\n", err)
-				return 1
-			}
 			if o.WriteClientKey {
 				keyOut, err := os.OpenFile(o.ClientKeyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 				defer keyOut.Close()
@@ -52,7 +95,6 @@ func RunAcmeExecPlugin(o *PluginOptions) int {
 				pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(clientKey)})
 			}
 		} else {
-			// load client key
 			keyFile, err := ioutil.ReadFile(o.ClientKeyPath)
 			if err != nil {
 				fmt.Printf("Cannot open client key file: %v\n", err)
@@ -67,25 +109,13 @@ func RunAcmeExecPlugin(o *PluginOptions) int {
 		}
 	}
 
-	certOut, err := os.OpenFile(o.CertPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	defer certOut.Close()
-	if err != nil {
-		fmt.Printf("Cannot open cert file for writing: %v\n", err)
-		return 1
-	}
-	keyOut, err := os.OpenFile(o.CertKeyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	defer keyOut.Close()
-	if err != nil {
-		fmt.Printf("Cannot open cert key file for writing: %v\n", err)
-		return 1
-	}
-
 	// register client
-	cli, err := acmeclient.NewClient(o.ServerURL+o.DirPath, o.RegisterEmail, clientKey, roots)
+	cli, err := acmeclient.NewClient(o.ServerURL+o.DirPath, o.RegisterEmail, clientKey, roots, o.DebugFile)
 	if err != nil {
 		fmt.Printf("Error getting new client: %v\n", err)
 		return 1
 	}
+	defer cli.Cleanup()
 
 	// submit new order
 	err = cli.Order()
@@ -153,13 +183,14 @@ type PluginOptions struct {
 	CertKeyPath    string
 	WriteClientKey bool
 	Debug          bool
+	DebugFile      string
 	ChallengeAddr  string
 	DirPath        string
 	RegisterEmail  string
 }
 
 func (o *PluginOptions) Verify() error {
-	if len(o.ServerURL) < 1 {
+	if len(o.ServerURL) == 0 {
 		return fmt.Errorf("ACME server url is required")
 	}
 	serverUrl, err := url.Parse(o.ServerURL)
@@ -169,8 +200,6 @@ func (o *PluginOptions) Verify() error {
 	if serverUrl.Scheme != "https" {
 		return fmt.Errorf("ACME requires HTTPS")
 	}
-
-	// add more
 
 	return nil
 }

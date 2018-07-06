@@ -17,6 +17,8 @@ import (
 	osruntime "runtime"
 	"time"
 
+	"os"
+
 	"golang.org/x/crypto/acme"
 	"gopkg.in/square/go-jose.v2"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -67,7 +69,14 @@ type client struct {
 }
 
 // registration and some other routines based on the pebble client.
-func NewClient(server, email string, key *rsa.PrivateKey, pebbleCAPool *x509.CertPool) (*client, error) {
+func NewClient(server, email string, key *rsa.PrivateKey, pebbleCAPool *x509.CertPool, debugFile string) (*client, error) {
+	if PrintDebug && len(debugFile) != 0 {
+		var err error
+		DebugFile, err = os.OpenFile(debugFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+		if err != nil {
+			return nil, fmt.Errorf("error opening debug file %s", debugFile)
+		}
+	}
 	url, err := url.Parse(server)
 	if err != nil {
 		return nil, err
@@ -117,6 +126,12 @@ func NewClient(server, email string, key *rsa.PrivateKey, pebbleCAPool *x509.Cer
 	return c, nil
 }
 
+func (c *client) Cleanup() {
+	if DebugFile != nil {
+		DebugFile.Close()
+	}
+}
+
 type OrderIdentifier struct {
 	IdType  string `json:"type"`
 	IdValue string `json:"value"`
@@ -132,10 +147,15 @@ type OrderResponse struct {
 }
 
 var PrintDebug = false
+var DebugFile *os.File
 
 func debugLog(format string, a ...interface{}) (n int, err error) {
 	if PrintDebug {
-		fmt.Printf(format, a...)
+		if DebugFile != nil {
+			fmt.Fprintf(DebugFile, format, a...)
+		} else {
+			fmt.Printf(format, a...)
+		}
 	}
 	return 0, nil
 }
@@ -251,20 +271,20 @@ func (c *client) PollForCertificate(url string) ([]byte, []byte, []byte, error) 
 	if c.certKey == nil {
 		return nil, nil, nil, fmt.Errorf("must call finalize first")
 	}
-	debugLog("polling for an issued certificate")
+	debugLog("polling for an issued certificate\n")
 
 	var cert []byte
 	err := wait.Poll(time.Second, 10*time.Second, func() (done bool, err error) {
 		body, resp, err := c.getAPI(url)
 		if err != nil {
 			if resp != nil && resp.StatusCode/100 != 2 {
-				debugLog("poll: retrying")
+				debugLog("poll: retrying\n")
 				return false, nil
 			}
 			return false, err
 		}
 		cert = body
-		debugLog("poll: ok")
+		debugLog("poll: ok\n")
 		return true, nil
 	})
 
@@ -292,12 +312,12 @@ func (c *client) PollForOrderReady() (string, error) {
 	var certUrl string
 
 	err := wait.Poll(time.Second, 10*time.Second, func() (done bool, err error) {
-		debugLog("polling for an accepted order")
+		debugLog("polling for an accepted order\n")
 
 		body, resp, err := c.getAPI(c.orderLocation)
 		if err != nil {
 			if resp != nil && resp.StatusCode/100 != 2 {
-				debugLog("poll: retrying")
+				debugLog("poll: retrying\n")
 				return false, nil
 			}
 			return false, err
@@ -310,7 +330,7 @@ func (c *client) PollForOrderReady() (string, error) {
 		}
 
 		if orderResponse.Status != "valid" {
-			debugLog("poll: retrying")
+			debugLog("poll: retrying\n")
 			return false, nil
 		}
 		certUrl = orderResponse.Certificate
@@ -329,7 +349,9 @@ func (c *client) PollForOrderReady() (string, error) {
 // Finalize posts a CSR to the order finalize url. On success this causes the server
 // to move the order to processing and issue the certificate.
 func (c *client) Finalize() error {
+
 	// create CSR
+	// TODO: Make names configurable
 	certReq := &x509.CertificateRequest{
 		Subject:  pkix.Name{CommonName: "localhost"},
 		DNSNames: []string{"localhost"},
@@ -447,6 +469,15 @@ func (c *client) SetupChallenge(challengeAddr string) (*http.Server, error) {
 	}
 
 	return srv, nil
+}
+
+// MakeCreds returns a JSON encoded ExecCredential from cert and key.
+func MakeCreds(cert, key []byte) []byte {
+	ret, err := encodeClientCreds(cert, key)
+	if err != nil {
+		return nil
+	}
+	return ret
 }
 
 func (c *client) signEmbedded(data []byte, url string) (*jose.JSONWebSignature, error) {
