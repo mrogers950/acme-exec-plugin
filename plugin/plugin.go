@@ -210,7 +210,7 @@ func (o *PluginOptions) Verify() error {
 		return fmt.Errorf("Certificate subject name is required")
 	}
 
-	if !strings.Contains(o.Subject, "CN") || !strings.Contains(o.Subject, "cn") {
+	if !strings.Contains(o.Subject, "CN") && !strings.Contains(o.Subject, "cn") {
 		return fmt.Errorf("Certificate subject requires a CN")
 	}
 
