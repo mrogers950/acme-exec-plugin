@@ -12,6 +12,8 @@ import (
 
 	"crypto/tls"
 
+	"strings"
+
 	acmeclient "github.com/mrogers950/acme-exec-plugin/plugin/client"
 )
 
@@ -151,7 +153,7 @@ func RunAcmeExecPlugin(o *PluginOptions) int {
 		return 1
 	}
 
-	err = cli.Finalize()
+	err = cli.Finalize(o.Subject, o.SplitNames)
 	if err != nil {
 		fmt.Printf("Error finalizing order: %v\n", err)
 		return 1
@@ -187,6 +189,9 @@ type PluginOptions struct {
 	ChallengeAddr  string
 	DirPath        string
 	RegisterEmail  string
+	Subject        string
+	Names          string
+	SplitNames     []string
 }
 
 func (o *PluginOptions) Verify() error {
@@ -199,6 +204,18 @@ func (o *PluginOptions) Verify() error {
 	}
 	if serverUrl.Scheme != "https" {
 		return fmt.Errorf("ACME requires HTTPS")
+	}
+
+	if len(o.Subject) == 0 {
+		return fmt.Errorf("Certificate subject name is required")
+	}
+
+	if !strings.Contains(o.Subject, "CN") || !strings.Contains(o.Subject, "cn") {
+		return fmt.Errorf("Certificate subject requires a CN")
+	}
+
+	if len(o.Names) != 0 {
+		o.SplitNames = strings.Split(o.Names, ",")
 	}
 
 	return nil

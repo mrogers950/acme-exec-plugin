@@ -19,6 +19,10 @@ import (
 
 	"os"
 
+	"net"
+
+	"strings"
+
 	"golang.org/x/crypto/acme"
 	"gopkg.in/square/go-jose.v2"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -348,13 +352,54 @@ func (c *client) PollForOrderReady() (string, error) {
 
 // Finalize posts a CSR to the order finalize url. On success this causes the server
 // to move the order to processing and issue the certificate.
-func (c *client) Finalize() error {
+func (c *client) Finalize(subject string, names []string) error {
+	// Parse names
+	ips := make([]net.IP, 0)
+	dnsNames := make([]string, 0)
+	for _, name := range names {
+		if ip := net.ParseIP(name); ip != nil {
+			ips = append(ips, ip)
+		} else {
+			dnsNames = append(dnsNames, name)
+		}
+	}
 
-	// create CSR
-	// TODO: Make names configurable
+	// Parse subject
+	commonName := ""
+	oNames := make([]string, 0)
+	ouNames := make([]string, 0)
+
+	splitSub := strings.Split(subject, ",")
+	for _, rdn := range splitSub {
+		r := strings.Split(rdn, "=")
+		if len(r) < 2 {
+			continue
+		}
+		switch r[0] {
+		case "CN", "cn":
+			if len(commonName) == 0 {
+				commonName = r[1]
+			}
+		case "O", "o":
+			oNames = append(oNames, r[1])
+		case "OU", "ou":
+			ouNames = append(ouNames, r[1])
+		}
+	}
+
+	if len(commonName) == 0 {
+		return fmt.Errorf("given subject name does not have a CN field")
+	}
+
+	// Create CSR
 	certReq := &x509.CertificateRequest{
-		Subject:  pkix.Name{CommonName: "localhost"},
-		DNSNames: []string{"localhost"},
+		Subject: pkix.Name{
+			CommonName:         commonName,
+			Organization:       oNames,
+			OrganizationalUnit: ouNames,
+		},
+		DNSNames:    dnsNames,
+		IPAddresses: ips,
 	}
 
 	var key *rsa.PrivateKey
