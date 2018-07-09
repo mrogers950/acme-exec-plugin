@@ -64,3 +64,48 @@ Pebble 2018/07/09 11:52:39 GET /certZ/3c0fdf2a368daeb9 -> calling handler()
 ```
 
 For an example of using the plugin binary as a client-go exec plugin, see [example.kubeconfig](https://raw.githubusercontent.com/mrogers950/acme-exec-plugin/master/example.kubeconfig)
+
+Usage:
+```
+Usage of ./acme-exec-plugin:
+  -alsologtostderr
+        log to standard error as well as files
+  -cert string
+        The path to cache the fulfilled certificate. When the file does not exist, the issued certificate is saved. If the file exists, the plugin returns the cert as a cached credential. Must be specified with --cert-key (default "acme-plugin-cert.pem")
+  -cert-key string
+        The path to cache the fulfilled certificate key. When the file does not exist, the issued certificate key is saved. If the file exists, the plugin returns the key as a cached credential. Must be specified with --cert (default "acme-plugin-key.pem")
+  -challenge-addr string
+        Address (with port) to listen for HTTP on for the client to satisfy ACME challenges
+  -client-key string
+        The path to a PEM private key file for client registration. If the file does not exist, a generated key is saved when specifying --write-client-key (default "acme-plugin-clientkey.pem")
+  -debug
+        Print debug messages
+  -debug-file string
+        Print debug messages to the specified file when using --debug
+  -directory-path string
+        The path to the discovery directory on the ACME server (default "/dir")
+  -email string
+        The email address used for client registration (default "foo@bar.com")
+  -log_backtrace_at value
+        when logging hits line file:N, emit a stack trace
+  -log_dir string
+        If non-empty, write log files in this directory
+  -logtostderr
+        log to standard error instead of files
+  -names string
+        A comma separated list of additional names to request in the certificate
+  -server-ca string
+        ACME server CA for HTTPS. Uses the system CA store if unset
+  -server-url string
+        An HTTPS ACME server URL. Required
+  -stderrthreshold value
+        logs at or above this threshold go to stderr
+  -subject string
+        The subject name of the certificate to request. Required
+  -v value
+        log level for V logs
+  -vmodule value
+        comma-separated list of pattern=N settings for file-filtered logging
+  -write-client-key
+        Write the client registration key to the --client-key file
+```
